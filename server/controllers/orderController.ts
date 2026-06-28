@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../config/prisma.js";
-import { timeStamp } from "node:console";
 import { inngest } from "../inngest/index.js";
+import Stripe from 'stripe'
 
 // Create Order
 // POST  /api/orders
@@ -22,7 +22,7 @@ export const createOrder = async (req: Request, res: Response) => {
 
     // Check if product is in stock
     for (const item of items) {
-        const product = productMap[items.product]
+        const product = productMap[item.product]
         if (!product || (product.stock ?? 0) < item.quantity) {
             return res.status(404).json({ message: "Product out of stock" })
         }
@@ -62,6 +62,28 @@ export const createOrder = async (req: Request, res: Response) => {
 
     if (paymentMethod === "card") {
         // stripe payment link
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string)
+
+        // create session
+        const session = await stripe.checkout.sessions.create({
+            success_url: `${req.headers.origin}/orders?clearCart=true`,
+            cancel_url: `${req.headers.origin}/checkout`,
+            line_items: [
+                {
+                    price_data: {
+                        currency: "usd",
+                        product_data: {
+                            name: "Payment Groceries"
+                        },
+                        unit_amount: Math.round(total * 100)
+                    },
+                    quantity: 1,
+                },
+            ],
+            mode: 'payment',
+            metadata: {orderId: order.id}
+        });
+        return res.json({url: session.url})
     }
 
     res.json({ order })
@@ -75,11 +97,11 @@ export const createOrder = async (req: Request, res: Response) => {
     }
 
     // Send stock update events for each product in the order
-    for(const item of orderItems) {
-        await inngest.send({name: "inventory/stock.updated", data: {productId: item.product}})
+    for (const item of orderItems) {
+        await inngest.send({ name: "inventory/stock.updated", data: { productId: item.product } })
     }
 
-    await inngest.send({name: "order/placed", data: {orderId: order.id}})
+    await inngest.send({ name: "order/placed", data: { orderId: order.id } })
 }
 
 // Get user's orders
@@ -146,7 +168,7 @@ export const getAllOrders = async (req: Request, res: Response) => {
     const orders = await prisma.order.findMany({
         where: { NOT: [{ paymentMethod: "card", isPaid: false }] },
         include: {
-            user: {select: {name: true, email: true}},
+            user: { select: { name: true, email: true } },
             deliveryPartner: { select: { name: true, phone: true, email: true } }
         },
         orderBy: { createdAt: "desc" }
@@ -159,10 +181,10 @@ export const getAllOrders = async (req: Request, res: Response) => {
 // GET  /api/orders/:id/location
 export const getOrderLocation = async (req: Request, res: Response) => {
     const order = await prisma.order.findFirst({
-        where: { id: req.params.id as string, userId: req.user!.id  },
-        select: {liveLocation: true, status: true}
+        where: { id: req.params.id as string, userId: req.user!.id },
+        select: { liveLocation: true, status: true }
     })
 
-    if(!order) return res.status(404).json({message: "Order not found"})
+    if (!order) return res.status(404).json({ message: "Order not found" })
     res.json({ liveLocation: order.liveLocation, status: order.status })
 }
